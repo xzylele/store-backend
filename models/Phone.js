@@ -21,8 +21,16 @@ const phoneSchema = new mongoose.Schema({
     type: String 
   },
   stock: { 
-    type: Number, default: 0 }
-  
+    type: Number, 
+    default: 0 
+  },
+  // 🟢 เพิ่มส่วนหมวดหมู่สินค้า
+  category: { 
+    type: String, 
+    required: true,
+    enum: ['Phone', 'Case', 'AirPods', 'Apple Watch'], // จำกัดประเภทสินค้า
+    default: 'Phone' // ถ้าไม่ระบุ ให้เป็น Phone ไว้ก่อน
+  }
 }, { timestamps: true }); // timestamps จะช่วยเก็บเวลาที่สร้างและอัปเดตข้อมูลให้โดยอัตโนมัติ
 
 module.exports = mongoose.model('Phone', phoneSchema);

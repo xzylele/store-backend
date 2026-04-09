@@ -1,36 +1,27 @@
 const mongoose = require('mongoose');
 
 const phoneSchema = new mongoose.Schema({
-  name: { 
-    type: String, 
-    required: true // บังคับว่าต้องมีชื่อ
-  },
-  price: { 
-    type: Number, 
-    required: true 
-  },
-  brand: { 
-    type: String, 
-    required: true 
-  },
-  image: { 
-    type: String, 
-    required: true // เก็บเป็น URL ของรูปภาพ
-  },
-  description: { 
-    type: String 
-  },
-  stock: { 
-    type: Number, 
-    default: 0 
-  },
-  // 🟢 เพิ่มส่วนหมวดหมู่สินค้า
+  name: { type: String, required: true },
+  price: { type: Number, required: true },
+  brand: { type: String, required: true },
+  image: { type: String, required: true }, // รูปหลัก (สำหรับแสดงหน้าแรก)
+  description: { type: String },
+  stock: { type: Number, default: 0 },
   category: { 
     type: String, 
     required: true,
-    enum: ['Phone', 'Case', 'AirPods', 'Apple Watch'], // จำกัดประเภทสินค้า
-    default: 'Phone' // ถ้าไม่ระบุ ให้เป็น Phone ไว้ก่อน
-  }
-}, { timestamps: true }); // timestamps จะช่วยเก็บเวลาที่สร้างและอัปเดตข้อมูลให้โดยอัตโนมัติ
+    enum: ['Phone', 'Case', 'AirPods', 'Apple Watch'], 
+    default: 'Phone' 
+  },
+  
+  // 🟢 ส่วนที่เพิ่มใหม่: ระบบเลือกสีและรูปภาพตามสี
+  variants: [
+    {
+      colorName: { type: String, required: true }, // เช่น "Natural Titanium"
+      colorCode: { type: String },                 // เช่น "#BEBEBE" (สำหรับทำปุ่มวงกลมสี)
+      variantImage: { type: String, required: true } // URL รูปภาพของสีนี้
+    }
+  ]
+}, { timestamps: true });
 
 module.exports = mongoose.model('Phone', phoneSchema);

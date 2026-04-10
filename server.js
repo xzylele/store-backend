@@ -130,7 +130,6 @@ app.post('/api/checkout', async (req, res) => {
       const phone = await Phone.findById(item.id);
       if (!phone) return res.status(404).json({ message: `ไม่พบสินค้า: ${item.name}` });
 
-      // ดึงชื่อสีออกจากชื่อสินค้า เช่น "iPhone 16 (Black)" -> "Black"
       const colorMatch = item.name.match(/\(([^)]+)\)/);
       const selectedColor = colorMatch ? colorMatch[1] : null;
 
@@ -148,36 +147,26 @@ app.post('/api/checkout', async (req, res) => {
     if (couponCode) {
       const coupon = await Coupon.findOne({ code: couponCode.toUpperCase(), isActive: true });
       if (coupon) {
-        if (coupon.usageLimit !== null && coupon.usageCount >= coupon.usageLimit) {
-          return res.status(400).json({ message: "โค้ดส่วนลดนี้ถูกใช้ครบจำนวนแล้ว" });
-        }
         await Coupon.updateOne({ code: couponCode.toUpperCase() }, { $inc: { usageCount: 1 } });
       }
     }
 
-    // 3. 🟢 ขั้นตอนการตัดสต็อก (ตัดทั้งใน Variants และ Stock รวม)
+    // 3. ตัดสต็อก
     for (const item of items) {
       const colorMatch = item.name.match(/\(([^)]+)\)/);
       const selectedColor = colorMatch ? colorMatch[1] : null;
 
       if (selectedColor) {
-        // อัปเดตทั้งสต็อกสีที่เลือก และสต็อกรวมของรุ่นนั้น
         await Phone.updateOne(
           { _id: item.id, "variants.colorName": selectedColor },
-          { 
-            $inc: { 
-              "variants.$.stock": -item.quantity, 
-              "stock": -item.quantity 
-            } 
-          }
+          { $inc: { "variants.$.stock": -item.quantity, "stock": -item.quantity } }
         );
       } else {
-        // กรณีไม่มีสี (สินค้าทั่วไป)
         await Phone.findByIdAndUpdate(item.id, { $inc: { stock: -item.quantity } });
       }
     }
 
-    // 4. บันทึกออเดอร์พร้อมข้อมูลที่อยู่และสลิป
+    // 4. บันทึกออเดอร์
     const newOrder = new Order({
       username,
       items: items.map(i => ({
@@ -193,28 +182,61 @@ app.post('/api/checkout', async (req, res) => {
     });
     await newOrder.save();
 
-    res.json({ message: "สั่งซื้อสำเร็จ! สต็อกถูกอัปเดตเรียบร้อย" });
+    res.json({ message: "สั่งซื้อสำเร็จ!" });
   } catch (error) {
     console.error("Checkout Error:", error);
-    res.status(500).json({ message: "เกิดข้อผิดพลาดในการประมวลผล", error });
+    res.status(500).json({ message: "เกิดข้อผิดพลาด", error });
   }
 });
 
 // ------------------------------------
-// 📦 ORDER MANAGEMENT API
+// 📦 ORDER MANAGEMENT API - อัปเดตสถานะและคืนสต็อกหาก Cancelled
 // ------------------------------------
 
 app.patch('/api/orders/:id/status', async (req, res) => {
   try {
     const { status } = req.body;
+    const orderId = req.params.id;
+
+    // 1. ดึงข้อมูลออเดอร์เดิม
+    const order = await Order.findById(orderId);
+    if (!order) return res.status(404).json({ message: "ไม่พบออเดอร์" });
+
+    // 🟢 ถ้าเปลี่ยนสถานะเป็น 'Cancelled' และเดิมไม่ใช่ 'Cancelled' ให้คืนสต็อก
+    if (status === 'Cancelled' && order.status !== 'Cancelled') {
+      for (const item of order.items) {
+        const colorMatch = item.name.match(/\(([^)]+)\)/);
+        const selectedColor = colorMatch ? colorMatch[1] : null;
+        
+        // ค้นหาสินค้าจากชื่อ (ตัดชื่อสีออก)
+        const baseName = item.name.split(' (')[0];
+        const phone = await Phone.findOne({ name: baseName });
+
+        if (phone) {
+          if (selectedColor) {
+            // คืนสต็อกเฉพาะสี และ สต็อกหลัก
+            await Phone.updateOne(
+              { _id: phone._id, "variants.colorName": selectedColor },
+              { $inc: { "variants.$.stock": item.quantity, "stock": item.quantity } }
+            );
+          } else {
+            // คืนสต็อกหลักอย่างเดียว
+            await Phone.findByIdAndUpdate(phone._id, { $inc: { stock: item.quantity } });
+          }
+        }
+      }
+    }
+
+    // 2. อัปเดตสถานะ
     const updatedOrder = await Order.findByIdAndUpdate(
-      req.params.id, 
+      orderId, 
       { status }, 
       { new: true }
     );
     res.json(updatedOrder);
   } catch (error) {
-    res.status(500).json({ message: "อัปเดตสถานะไม่สำเร็จ" });
+    console.error("Status Update Error:", error);
+    res.status(500).json({ message: "อัปเดตไม่สำเร็จ", error });
   }
 });
 

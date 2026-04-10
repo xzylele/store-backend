@@ -25,13 +25,14 @@ const Coupon = mongoose.models.Coupon || mongoose.model('Coupon', couponSchema);
 const app = express();
 
 // 🟢 ปรับปรุง CORS สำหรับ Render.com
-// origin สามารถใส่เป็น URL ของ Frontend ที่ได้จาก Render หรือใช้ '*' ในช่วงทดสอบก็ได้ครับ
 app.use(cors({
   origin: ["http://localhost:3000", /\.onrender\.com$/], 
   credentials: true
 }));
 
-app.use(express.json());
+// 🟢 ขยายขนาดการรับข้อมูล (สำคัญมากสำหรับการส่งรูปสลิป Base64)
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 const JWT_SECRET = process.env.JWT_SECRET || "your_super_secret_key";
 
@@ -117,34 +118,39 @@ app.delete('/api/coupons/:id', async (req, res) => {
 });
 
 // ------------------------------------
-// 🛒 CHECKOUT API - ตัดสต็อก + ตัดโควตาคูปอง
+// 🛒 CHECKOUT API - แก้ไขให้รับที่อยู่และสลิป
 // ------------------------------------
 
 app.post('/api/checkout', async (req, res) => {
-  const { items, username, totalAmount, couponCode } = req.body; 
+  // 🟢 รับค่า shippingAddress และ paymentProof เพิ่มจาก req.body
+  const { items, username, totalAmount, couponCode, shippingAddress, paymentProof } = req.body; 
 
   try {
+    // 1. ตรวจสอบสต็อก
     for (const item of items) {
       const phone = await Phone.findById(item.id);
       if (!phone) return res.status(404).json({ message: `ไม่พบสินค้า: ${item.name}` });
       if (phone.stock < item.quantity) return res.status(400).json({ message: `สินค้า ${item.name} เหลือไม่พอ` });
     }
 
+    // 2. จัดการคูปอง (ถ้ามี)
     if (couponCode) {
       const coupon = await Coupon.findOne({ code: couponCode.toUpperCase(), isActive: true });
       if (coupon) {
         if (coupon.usageLimit !== null && coupon.usageCount >= coupon.usageLimit) {
-          return res.status(400).json({ message: "ขออภัย โค้ดส่วนลดนี้เพิ่งจะถูกใช้จนครบจำนวนไปเมื่อสักครู่" });
+          return res.status(400).json({ message: "ขออภัย โค้ดส่วนลดนี้ถูกใช้ครบจำนวนแล้ว" });
         }
         await Coupon.updateOne({ code: couponCode.toUpperCase() }, { $inc: { usageCount: 1 } });
       }
     }
 
+    // 3. ตัดสต็อกสินค้า
     const updatePromises = items.map(item => {
       return Phone.findByIdAndUpdate(item.id, { $inc: { stock: -item.quantity } });
     });
     await Promise.all(updatePromises);
 
+    // 4. บันทึกออเดอร์พร้อมข้อมูลที่อยู่และสลิป
     const newOrder = new Order({
       username,
       items: items.map(i => ({
@@ -154,11 +160,13 @@ app.post('/api/checkout', async (req, res) => {
         image: i.image
       })),
       totalAmount,
+      shippingAddress, // 🟢 บันทึกที่อยู่
+      paymentProof,    // 🟢 บันทึกสลิป
       status: 'Pending'
     });
     await newOrder.save();
 
-    res.json({ message: "สั่งซื้อสำเร็จ!" });
+    res.json({ message: "สั่งซื้อสำเร็จ! เราจะรีบตรวจสอบหลักฐานการโอนเงินครับ" });
   } catch (error) {
     console.error("Checkout Error:", error);
     res.status(500).json({ message: "เกิดข้อผิดพลาดในการประมวลผลการสั่งซื้อ", error });
@@ -166,7 +174,25 @@ app.post('/api/checkout', async (req, res) => {
 });
 
 // ------------------------------------
-// AUTH & CRUD API (คงเดิม)
+// 📦 ORDER MANAGEMENT API (สำหรับหน้า Admin)
+// ------------------------------------
+
+app.patch('/api/orders/:id/status', async (req, res) => {
+  try {
+    const { status } = req.body;
+    const updatedOrder = await Order.findByIdAndUpdate(
+      req.params.id, 
+      { status }, 
+      { new: true }
+    );
+    res.json(updatedOrder);
+  } catch (error) {
+    res.status(500).json({ message: "อัปเดตสถานะไม่สำเร็จ" });
+  }
+});
+
+// ------------------------------------
+// AUTH & CRUD API
 // ------------------------------------
 
 app.post('/api/register', async (req, res) => {
@@ -248,7 +274,6 @@ app.delete('/api/phones/:id', async (req, res) => {
   }
 });
 
-// 🟢 ส่วนสำคัญสำหรับการ Deploy บน Render
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server วิ่งอยู่ที่พอร์ต ${PORT}`);

@@ -30,7 +30,7 @@ app.use(cors({
   credentials: true
 }));
 
-// 🟢 ขยายขนาดการรับข้อมูล (สำคัญมากสำหรับการส่งรูปสลิป Base64)
+// 🟢 ขยายขนาดการรับข้อมูลเพื่อให้รับรูปสลิป Base64 ได้
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
@@ -118,37 +118,64 @@ app.delete('/api/coupons/:id', async (req, res) => {
 });
 
 // ------------------------------------
-// 🛒 CHECKOUT API - แก้ไขให้รับที่อยู่และสลิป
+// 🛒 CHECKOUT API - ตัดสต็อกแยกสี + บันทึกที่อยู่สลิป
 // ------------------------------------
 
 app.post('/api/checkout', async (req, res) => {
-  // 🟢 รับค่า shippingAddress และ paymentProof เพิ่มจาก req.body
   const { items, username, totalAmount, couponCode, shippingAddress, paymentProof } = req.body; 
 
   try {
-    // 1. ตรวจสอบสต็อก
+    // 1. ตรวจสอบสต็อก (เช็คสต็อกแยกสี)
     for (const item of items) {
       const phone = await Phone.findById(item.id);
       if (!phone) return res.status(404).json({ message: `ไม่พบสินค้า: ${item.name}` });
-      if (phone.stock < item.quantity) return res.status(400).json({ message: `สินค้า ${item.name} เหลือไม่พอ` });
+
+      // ดึงชื่อสีออกจากชื่อสินค้า เช่น "iPhone 16 (Black)" -> "Black"
+      const colorMatch = item.name.match(/\(([^)]+)\)/);
+      const selectedColor = colorMatch ? colorMatch[1] : null;
+
+      if (selectedColor) {
+        const variant = phone.variants.find(v => v.colorName === selectedColor);
+        if (variant && variant.stock < item.quantity) {
+          return res.status(400).json({ message: `สี ${selectedColor} ของ ${phone.name} เหลือไม่พอ` });
+        }
+      } else if (phone.stock < item.quantity) {
+        return res.status(400).json({ message: `สินค้า ${item.name} เหลือไม่พอ` });
+      }
     }
 
-    // 2. จัดการคูปอง (ถ้ามี)
+    // 2. จัดการคูปอง
     if (couponCode) {
       const coupon = await Coupon.findOne({ code: couponCode.toUpperCase(), isActive: true });
       if (coupon) {
         if (coupon.usageLimit !== null && coupon.usageCount >= coupon.usageLimit) {
-          return res.status(400).json({ message: "ขออภัย โค้ดส่วนลดนี้ถูกใช้ครบจำนวนแล้ว" });
+          return res.status(400).json({ message: "โค้ดส่วนลดนี้ถูกใช้ครบจำนวนแล้ว" });
         }
         await Coupon.updateOne({ code: couponCode.toUpperCase() }, { $inc: { usageCount: 1 } });
       }
     }
 
-    // 3. ตัดสต็อกสินค้า
-    const updatePromises = items.map(item => {
-      return Phone.findByIdAndUpdate(item.id, { $inc: { stock: -item.quantity } });
-    });
-    await Promise.all(updatePromises);
+    // 3. 🟢 ขั้นตอนการตัดสต็อก (ตัดทั้งใน Variants และ Stock รวม)
+    for (const item of items) {
+      const colorMatch = item.name.match(/\(([^)]+)\)/);
+      const selectedColor = colorMatch ? colorMatch[1] : null;
+
+      if (selectedColor) {
+        // อัปเดตทั้งสต็อกสีที่เลือก และสต็อกรวมของรุ่นนั้น
+        await Phone.updateOne(
+          { _id: item.id, "variants.colorName": selectedColor },
+          { 
+            $inc: { 
+              "variants.$.stock": -item.quantity, 
+              "stock": -item.quantity 
+            } 
+          }
+        );
+      } else {
+        // กรณีไม่มีสี (สินค้าทั่วไป)
+        await Phone.findByIdAndUpdate(item.id, { $inc: { stock: -item.quantity } });
+      }
+    }
 
     // 4. บันทึกออเดอร์พร้อมข้อมูลที่อยู่และสลิป
     const newOrder = new Order({
@@ -160,21 +187,21 @@ app.post('/api/checkout', async (req, res) => {
         image: i.image
       })),
       totalAmount,
-      shippingAddress, // 🟢 บันทึกที่อยู่
-      paymentProof,    // 🟢 บันทึกสลิป
+      shippingAddress, 
+      paymentProof,   
       status: 'Pending'
     });
     await newOrder.save();
 
-    res.json({ message: "สั่งซื้อสำเร็จ! เราจะรีบตรวจสอบหลักฐานการโอนเงินครับ" });
+    res.json({ message: "สั่งซื้อสำเร็จ! สต็อกถูกอัปเดตเรียบร้อย" });
   } catch (error) {
     console.error("Checkout Error:", error);
-    res.status(500).json({ message: "เกิดข้อผิดพลาดในการประมวลผลการสั่งซื้อ", error });
+    res.status(500).json({ message: "เกิดข้อผิดพลาดในการประมวลผล", error });
   }
 });
 
 // ------------------------------------
-// 📦 ORDER MANAGEMENT API (สำหรับหน้า Admin)
+// 📦 ORDER MANAGEMENT API
 // ------------------------------------
 
 app.patch('/api/orders/:id/status', async (req, res) => {
